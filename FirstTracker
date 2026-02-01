@@ -1,0 +1,69 @@
+#Imports
+import cv2
+import mediapipe as mp
+from threading import Lock #Needed to prevent latest_landmark corruption
+
+#Variable shortcut setups
+BaseOptions = mp.tasks.BaseOptions
+PoseLandmarker = mp.tasks.vision.PoseLandmarker
+PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
+PoseLandmarkerResult = mp.tasks.vision.PoseLandmarkerResult
+VisionRunningMode = mp.tasks.vision.RunningMode
+
+#Opens the camera, 0 is the first/main camera
+cap = cv2.VideoCapture(0)
+
+#Variables
+latest_landmarks = None
+lock = Lock()
+
+#Mediapipe function
+def store_landmarks(result: PoseLandmarkerResult, img, timestamp_ms: int):
+    global latest_landmarks
+    with lock:
+        latest_landmarks = result.pose_landmarks
+
+options = PoseLandmarkerOptions(
+    #r"" is needed to avoid unicode thingys
+    #loads the pose model file
+    base_options=BaseOptions(model_asset_path=r"C:\Users\cdcou\OneDrive\Documents\Coding\School\pose_landmarker_full.task"),
+    #Tells mediapipe that frames will show up continuously
+    running_mode=VisionRunningMode.LIVE_STREAM,
+    #calls the function
+    result_callback=store_landmarks
+)
+
+#Loads the model and uses it
+with PoseLandmarker.create_from_options(options) as landmarker:
+    while cap.isOpened(): #Run aslong as cam is on
+        ret, frame = cap.read() #ret is a bool: if the frame was captured
+        #frame is a numpy array (photo)
+        if not ret: #camera disconnect or bug
+            break
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) #CV uses BGR for some silly reason
+        landmarker.detect_async(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame), #Sends the frame to media pipe wrapped in a media pipe image format instead of numpy array
+                                int(cap.get(cv2.CAP_PROP_POS_MSEC))) #Timestamp
+        """
+        https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker#pose_landmarker_models
+        """
+        with lock:
+            if latest_landmarks:
+                for pose in latest_landmarks: #Goes through all the landmarks detected
+                    for lm in pose: #lm is a landmark (point), it contains x,y,z and visibility score
+                        x = int(lm.x * frame.shape[1]) #converts to pixel coords
+                        y = int(lm.y * frame.shape[0])
+                        cv2.circle(frame, (x, y), 4, (0, 255, 0), -1) #creates a 4 pixel dot at the x,y with the bgr colour and -1 makes it a filled circle
+            if latest_landmarks:
+                for pose in latest_landmarks:
+                    nose = pose[0] 
+                    nose_x = int(nose.x * frame.shape[1])
+                    nose_y = int(nose.y * frame.shape[0])
+                    print(f"Nose pixel coordinates: ({nose_x}, {nose_y})")
+                    cv2.circle(frame, (nose_x, nose_y), 6, (0, 0, 255), -1)
+        cv2.imshow("Camera", frame) #Makes the camera screen pop up
+        if cv2.waitKey(1) & 0xFF == 27: #ESC key to leave
+            break
+
+cap.release() #Removes the popup
+cv2.destroyAllWindows() #Removes all the CV popups
+
