@@ -1,0 +1,104 @@
+# Imports
+import cv2
+import mediapipe as mp
+from threading import Lock  # Needed to prevent latest_landmark corruption
+
+# Variable shortcut setups
+BaseOptions = mp.tasks.BaseOptions
+PoseLandmarker = mp.tasks.vision.PoseLandmarker
+PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
+PoseLandmarkerResult = mp.tasks.vision.PoseLandmarkerResult
+VisionRunningMode = mp.tasks.vision.RunningMode
+
+# Opens the camera, 0 is the first/main camera
+cap = cv2.VideoCapture(0)
+
+# Variables
+latest_landmarks = None
+lock = Lock()
+
+# Pushup counter variables
+pushup_count = 0
+pushup_down = False
+ELBOW_SHOULDER_THRESHOLD = 25  # pixels (tune if needed)
+
+# Mediapipe callback
+def store_landmarks(result: PoseLandmarkerResult, img, timestamp_ms: int):
+    global latest_landmarks
+    with lock:
+        latest_landmarks = result.pose_landmarks
+
+options = PoseLandmarkerOptions(
+    base_options=BaseOptions(
+        model_asset_path=r"C:\Users\cdcou\OneDrive\Documents\Coding\School\pose_landmarker_full.task"
+    ),
+    running_mode=VisionRunningMode.LIVE_STREAM,
+    result_callback=store_landmarks
+)
+
+# Load model
+with PoseLandmarker.create_from_options(options) as landmarker:
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        landmarker.detect_async(
+            mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame),
+            int(cap.get(cv2.CAP_PROP_POS_MSEC))
+        )
+
+        with lock:
+            if latest_landmarks:
+                for pose in latest_landmarks:
+                    # Draw all landmarks
+                    for lm in pose:
+                        x = int(lm.x * frame.shape[1])
+                        y = int(lm.y * frame.shape[0])
+                        cv2.circle(frame, (x, y), 3, (0, 255, 0), -1)
+
+                    # LEFT shoulder & elbow
+                    shoulder = pose[11]
+                    elbow = pose[13]
+
+                    shoulder_x = int(shoulder.x * frame.shape[1])
+                    shoulder_y = int(shoulder.y * frame.shape[0])
+                    elbow_x = int(elbow.x * frame.shape[1])
+                    elbow_y = int(elbow.y * frame.shape[0])
+
+                    # Highlight joints
+                    cv2.circle(frame, (shoulder_x, shoulder_y), 6, (255, 0, 0), -1)
+                    cv2.circle(frame, (elbow_x, elbow_y), 6, (0, 255, 255), -1)
+
+                    vertical_distance = abs(shoulder_y - elbow_y)
+
+                    # Bottom of pushup
+                    if vertical_distance < ELBOW_SHOULDER_THRESHOLD:
+                        pushup_down = True
+
+                    # Top of pushup → count
+                    if vertical_distance > ELBOW_SHOULDER_THRESHOLD + 20 and pushup_down:
+                        pushup_count += 1
+                        pushup_down = False
+                        print(f"Pushups: {pushup_count}")
+
+        # Display counter
+        cv2.putText(
+            frame,
+            f"Pushups: {pushup_count}",
+            (30, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.2,
+            (0, 255, 0),
+            3
+        )
+
+        cv2.imshow("Camera", frame)
+
+        if cv2.waitKey(1) & 0xFF == 27:  # ESC
+            break
+
+cap.release()
+cv2.destroyAllWindows()
